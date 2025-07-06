@@ -1,0 +1,138 @@
+---
+# ClusterRole for kubeprom to access Kubernetes metrics endpoints
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubeprom-metrics-reader
+  labels:
+    app: kubeprom
+    component: rbac
+rules:
+# Core API resources for node and pod information
+- apiGroups: [""]
+  resources:
+    - nodes
+    - nodes/proxy
+    - nodes/metrics
+    - pods
+    - pods/log
+    - endpoints
+    - services
+  verbs: ["get", "list", "watch"]
+
+# Access to metrics endpoints
+- apiGroups: [""]
+  resources:
+    - nodes/metrics
+    - nodes/stats
+    - nodes/proxy
+  verbs: ["get", "list"]
+
+# Access to API server metrics
+- nonResourceURLs:
+    - /metrics
+    - /api
+    - /api/*
+  verbs: ["get"]
+
+# Access to kubelet metrics endpoints
+- nonResourceURLs:
+    - /metrics
+    - /metrics/cadvisor
+    - /metrics/resource
+    - /metrics/probes
+  verbs: ["get"]
+
+# For authentication and node proxy
+- apiGroups: ["authentication.k8s.io"]
+  resources:
+    - tokenreviews
+  verbs: ["create"]
+
+- apiGroups: ["authorization.k8s.io"]
+  resources:
+    - subjectaccessreviews
+  verbs: ["create"]
+
+---
+# ServiceAccount for kubeprom
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeprom
+  namespace: default
+  labels:
+    app: kubeprom
+    component: serviceaccount
+
+---
+# ClusterRoleBinding to bind the ServiceAccount to the ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeprom-metrics-reader
+  labels:
+    app: kubeprom
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubeprom-metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: kubeprom
+  namespace: default
+
+---
+# Optional: Additional permissions for advanced metrics collection
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubeprom-extended-metrics
+  labels:
+    app: kubeprom
+    component: rbac-extended
+rules:
+# Extended metrics from control plane components
+- apiGroups: [""]
+  resources:
+    - configmaps
+    - secrets
+    - events
+  verbs: ["get", "list"]
+
+# Metrics from system namespaces
+- apiGroups: [""]
+  resources:
+    - pods
+    - services
+    - endpoints
+  verbs: ["get", "list", "watch"]
+  resourceNames: []
+
+# Access to control plane components in kube-system namespace 
+- apiGroups: [""]
+  resources:
+    - pods
+    - services
+  verbs: ["get", "list"]
+  resourceNames: []
+
+---
+# Optional: ClusterRoleBinding for extended metrics (commented out by default)
+# Uncomment this if you need extended metrics collection capabilities
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRoleBinding
+# metadata:
+#   name: kubeprom-extended-metrics
+#   labels:
+#     app: kubeprom
+#     component: rbac-extended
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: kubeprom-extended-metrics
+# subjects:
+# - kind: ServiceAccount
+#   name: kubeprom
+#   namespace: default
