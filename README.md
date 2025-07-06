@@ -202,17 +202,29 @@ apiserver_request_total  {method=GET,path=/healthz,code=200}      89.000000   14
 
 ## Data Sources
 
-kubeprom collects metrics from the following Kubernetes components:
+kubeprom collects metrics from the following Kubernetes components using the Kubernetes API proxy mechanism:
 
-| Component | Endpoint | Port | Protocol | Auto-Discovery |
-|-----------|----------|------|----------|----------------|
-| **API Server** | `/metrics` | 6443 | HTTPS | Via kubeconfig |
-| **kubelet** | `/metrics` | 10250 | HTTPS | Via node lookup |
-| **kubelet** | `/metrics/cadvisor` | 10250 | HTTPS | Via node lookup |
-| **etcd** | `/metrics` | 2381 | HTTPS | Via pod discovery |
-| **kube-scheduler** | `/metrics` | 10259 | HTTPS | Via pod discovery |
-| **kube-controller-manager** | `/metrics` | 10257 | HTTPS | Via pod discovery |
-| **kube-proxy** | `/metrics` | 10249 | HTTP | Via pod discovery |
+| Component | Endpoint | Access Method | Protocol | Auto-Discovery |
+|-----------|----------|---------------|----------|----------------|
+| **API Server** | `/metrics` | Direct API server | HTTPS | Via kubeconfig |
+| **kubelet** | `/metrics` | Node proxy | HTTPS | Via node lookup |
+| **kubelet** | `/metrics/cadvisor` | Node proxy | HTTPS | Via node lookup |
+| **etcd** | `/metrics` | Pod proxy (port 2381) | HTTPS | Via pod discovery |
+| **kube-scheduler** | `/metrics` | Pod proxy (port 10259) | HTTPS | Via pod discovery |
+| **kube-controller-manager** | `/metrics` | Pod proxy (port 10257) | HTTPS | Via pod discovery |
+| **kube-proxy** | `/metrics` | Pod proxy (port 10249) | HTTP | Via pod discovery |
+
+### Proxy Access Pattern
+
+kubeprom uses the Kubernetes API proxy mechanism instead of direct HTTP connections:
+
+- **Node Proxy**: `/api/v1/nodes/{node-name}/proxy/metrics`
+- **Pod Proxy**: `/api/v1/namespaces/{namespace}/pods/{pod-name}:{port}/proxy/metrics`
+
+This approach provides:
+- **Security**: All access goes through the API server with proper authentication
+- **Reliability**: No hardcoded ports or direct network connections
+- **Consistency**: Uses standard Kubernetes resource proxy patterns
 
 ### Metric Categories
 
@@ -239,21 +251,39 @@ kubeprom collects metrics from the following Kubernetes components:
                        │ Metrics Collection│
                        │                  │
                        │ • API Server     │
-                       │ • kubelet        │
-                       │ • etcd           │
-                       │ • Scheduler      │
-                       │ • Controller Mgr │
-                       │ • kube-proxy     │
+                       │ • Node Proxy     │
+                       │   - kubelet      │
+                       │   - cAdvisor     │
+                       │ • Pod Proxy      │
+                       │   - etcd         │
+                       │   - Scheduler    │
+                       │   - Controller   │
+                       │   - kube-proxy   │
+                       └──────────────────┘
+                                │
+                                ▼
+                       ┌──────────────────┐
+                       │ Kubernetes API   │
+                       │                  │
+                       │ • Authentication │
+                       │ • Authorization  │
+                       │ • Proxy Routing  │
+                       │ • TLS Security   │
                        └──────────────────┘
 ```
 
 ### Workflow
 
-1. **Collection**: Scrape metrics from multiple Kubernetes components in parallel
-2. **Storage**: Store metrics in an in-memory time-series database
-3. **Parsing**: Parse and validate PromQL query using Prometheus parser
-4. **Execution**: Execute query using Prometheus query engine
-5. **Display**: Format and display results in tabular format
+1. **Authentication**: Authenticate with Kubernetes API using kubeconfig
+2. **Discovery**: Discover available nodes and pods for component access
+3. **Collection**: Collect metrics via Kubernetes API proxy mechanism:
+   - Direct API server metrics access
+   - Node proxy for kubelet and cAdvisor metrics
+   - Pod proxy for control plane component metrics
+4. **Storage**: Store metrics in an in-memory time-series database
+5. **Parsing**: Parse and validate PromQL query using Prometheus parser
+6. **Execution**: Execute query using Prometheus query engine
+7. **Display**: Format and display results in tabular format
 
 ## Troubleshooting
 
@@ -283,15 +313,20 @@ Error: x509: certificate signed by unknown authority
 ### Connection Refused
 
 ```bash
-Error: failed to GET https://node-ip:10250/metrics: connection refused
+Error: failed to get scheduler metrics via pod proxy: error trying to reach service: dial tcp 192.168.49.2:10259: connect: connection refused
 ```
 
 **Causes**:
-- kubelet metrics port not exposed
-- Network policies blocking access
-- Firewall rules blocking port 10250
+- Control plane component not running or not exposing metrics
+- Component not accessible via pod proxy (common in managed clusters)
+- Network policies blocking API server proxy access
+- Component using different port than expected
 
-**Solution**: Verify kubelet configuration and network connectivity
+**Solutions**:
+1. Verify component is running: `kubectl get pods -n kube-system`
+2. Check if component exposes metrics: `kubectl describe pod <component-pod> -n kube-system`
+3. For managed clusters (EKS, GKE, AKS), control plane metrics may not be accessible
+4. Use `-debug` flag to see which components are successfully collected
 
 ### No Metrics Found
 
@@ -341,16 +376,20 @@ Error: invalid PromQL query: parse error at char 15: syntax error
 
 1. **In-Memory Storage**: Metrics are stored in memory only; no persistence
 2. **Single Query**: Executes one query at a time; no batch operations
-3. **Component Availability**: Requires direct access to component metrics ports
-4. **Network Dependencies**: Needs network access to all monitored components
-5. **Memory Usage**: Large clusters may require significant memory for metric storage
+3. **Component Availability**: Requires components to be accessible via API proxy
+4. **Managed Clusters**: Control plane metrics may not be accessible in managed clusters (EKS, GKE, AKS)
+5. **Network Dependencies**: Needs network access to Kubernetes API server
+6. **Memory Usage**: Large clusters may require significant memory for metric storage
+7. **Snapshot**: Provides point-in-time metrics, not historical data
 
 ## Performance Considerations
 
 - **Memory Usage**: ~1-10MB per 1000 metrics depending on label cardinality
 - **Collection Time**: ~5-30 seconds depending on cluster size and network latency
 - **Query Performance**: Milliseconds for simple queries, seconds for complex aggregations
-- **Concurrent Limits**: Limited by Kubernetes API server rate limits
+- **API Server Load**: All requests go through API server; respects rate limits
+- **Proxy Overhead**: Slight overhead from API proxy vs direct connections
+- **Concurrent Collection**: Components collected in parallel for efficiency
 
 ## Contributing
 
